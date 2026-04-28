@@ -13,41 +13,38 @@ from app.config import settings
 
 
 INITIAL_ANALYSIS_PROMPT = """
-You are an expert QA engineer performing autonomous UI testing on a website.
+You are a senior QA engineer performing REAL user simulation testing.
 
-You are given:
-1. A screenshot of the current page
-2. A JSON list of interactive elements (buttons, links, inputs, forms)
-3. The page URL
+Your goal is NOT to randomly click buttons.
+Your goal is to simulate a real user journey.
 
-Your job is to return a JSON test plan — a prioritized list of actions to test.
+STRICT PRIORITY ORDER:
 
-Return ONLY valid JSON in this exact format:
-{
-  "page_summary": "Brief description of what this page is",
-  "test_plan": [
-    {
-      "action": "click" | "type" | "navigate" | "scroll" | "hover" | "submit",
-      "target_selector": "CSS selector or 'url' for navigate",
-      "value": "text to type (if action=type) or URL (if action=navigate) or null",
-      "description": "Human readable description of what we're testing",
-      "priority": "high" | "medium" | "low"
-    }
-  ]
-}
+1. Check if login/signup is present
+   - If yes → plan login/signup flow FIRST
 
-Focus on:
-- Clicking all buttons and CTAs
-- Submitting forms with empty fields (to test validation)
-- Submitting forms with invalid data
-- Submitting forms with valid data
-- Navigating all nav links
-- Testing error states
-- Checking for broken interactions
+2. After login:
+   - Navigate through main pages (dashboard, profile, settings, etc.)
+   - Follow real navigation links (header, sidebar)
 
-Return maximum 15 actions. Prioritize high-impact flows first.
+3. On each page:
+   - Trigger API actions (form submit, fetch data)
+   - Validate responses (errors, loading, success states)
+
+4. Explore app like a user:
+   - Do NOT click random buttons
+   - ONLY meaningful actions
+
+5. Maintain logical flow:
+   - login → dashboard → features → logout
+
+Return structured JSON plan.
+
+CRITICAL:
+- Use REAL selectors (id, name, text)
+- Prefer click over navigate
+- Avoid fake URLs like "About page"
 """
-
 NEXT_ACTION_PROMPT = """
 You are an expert QA engineer performing autonomous UI testing.
 
@@ -252,6 +249,8 @@ def _raise_if_missing_key(provider: str) -> None:
         raise RuntimeError("GEMINI_API_KEY is not configured")
     if provider == "anthropic" and not settings.anthropic_api_key:
         raise RuntimeError("ANTHROPIC_API_KEY is not configured")
+    if provider == "groq" and not settings.groq_api_key:
+        raise RuntimeError("GROQ_API_KEY is not configured")
 
 
 def _parse_gemini_text(response_data: dict) -> str:
@@ -300,7 +299,8 @@ def _gemini_request(
     }
     if response_schema:
         payload["generationConfig"]["responseMimeType"] = "application/json"
-        payload["generationConfig"]["responseSchema"] = _to_gemini_schema(response_schema)
+        payload["generationConfig"]["responseSchema"] = _to_gemini_schema(
+            response_schema)
 
     body = json.dumps(payload).encode("utf-8")
     request = Request(
@@ -318,7 +318,8 @@ def _gemini_request(
             response_data = json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
         details = exc.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"Gemini API error ({exc.code}): {details}") from exc
+        raise RuntimeError(
+            f"Gemini API error ({exc.code}): {details}") from exc
     except URLError as exc:
         raise RuntimeError(f"Gemini connection error: {exc.reason}") from exc
 
@@ -362,6 +363,70 @@ def _anthropic_request(
     return response.content[0].text.strip()
 
 
+def _groq_request(
+    prompt_text: str,
+    *,
+    screenshot_bytes: Optional[bytes] = None,
+    max_output_tokens: int = 1000,
+) -> str:
+    if not settings.groq_api_key:
+        raise RuntimeError("GROQ_API_KEY is not configured")
+
+    try:
+        from groq import Groq
+    except ImportError as exc:
+        raise RuntimeError(
+            "Groq SDK not installed. Run: pip install groq") from exc
+
+    client = Groq(api_key=settings.groq_api_key)
+
+    response = client.chat.completions.create(
+        model=settings.groq_model,
+        messages=[
+            {"role": "system", "content": """
+You are NOT allowed to randomly click buttons.
+
+You must:
+- follow user journey
+- prioritize login
+- navigate logically
+- avoid meaningless actions
+"""},
+            {"role": "user", "content": prompt_text},
+        ],
+        temperature=0.2,
+        max_tokens=max_output_tokens,
+    )
+
+    return response.choices[0].message.content.strip()
+
+
+# async def _generate_text(
+#     prompt_text: str,
+#     *,
+#     screenshot_bytes: Optional[bytes] = None,
+#     response_schema: Optional[dict] = None,
+#     max_output_tokens: int = 1000,
+# ) -> str:
+#     provider = _provider_name()
+#     if provider == "anthropic":
+#         return await asyncio.to_thread(
+#             _anthropic_request,
+#             prompt_text,
+#             screenshot_bytes=screenshot_bytes,
+#             max_output_tokens=max_output_tokens,
+#         )
+#     if provider == "gemini":
+#         return await asyncio.to_thread(
+#             _gemini_request,
+#             prompt_text,
+#             screenshot_bytes=screenshot_bytes,
+#             response_schema=response_schema,
+#             max_output_tokens=max_output_tokens,
+#         )
+#     raise RuntimeError(f"Unsupported LLM provider: {settings.llm_provider}")
+
+
 async def _generate_text(
     prompt_text: str,
     *,
@@ -370,6 +435,15 @@ async def _generate_text(
     max_output_tokens: int = 1000,
 ) -> str:
     provider = _provider_name()
+
+    if provider == "groq":
+        return await asyncio.to_thread(
+            _groq_request,
+            prompt_text,
+            screenshot_bytes=screenshot_bytes,
+            max_output_tokens=max_output_tokens,
+        )
+
     if provider == "anthropic":
         return await asyncio.to_thread(
             _anthropic_request,
@@ -377,6 +451,7 @@ async def _generate_text(
             screenshot_bytes=screenshot_bytes,
             max_output_tokens=max_output_tokens,
         )
+
     if provider == "gemini":
         return await asyncio.to_thread(
             _gemini_request,
@@ -385,65 +460,12 @@ async def _generate_text(
             response_schema=response_schema,
             max_output_tokens=max_output_tokens,
         )
+
     raise RuntimeError(f"Unsupported LLM provider: {settings.llm_provider}")
 
 
-async def get_initial_test_plan(screenshot_bytes: bytes, dom_elements: list, url: str) -> dict:
-    """
-    Ask the configured LLM to analyze the page and return a prioritized test plan.
-    """
-    prompt = (
-        f"{INITIAL_ANALYSIS_PROMPT}\n\n"
-        f"Page URL: {url}\n\n"
-        f"Interactive elements found:\n{json.dumps(dom_elements[:50], indent=2)}"
-    )
-
-    try:
-        raw = await _generate_text(
-            prompt,
-            screenshot_bytes=screenshot_bytes,
-            response_schema=TEST_PLAN_SCHEMA,
-            max_output_tokens=2000,
-        )
-        return json.loads(_strip_json_fences(raw))
-    except Exception as e:
-        return {
-            "page_summary": f"Could not analyze page: {str(e)}",
-            "test_plan": [],
-        }
 
 
-async def get_next_action(
-    screenshot_bytes: bytes,
-    dom_elements: list,
-    url: str,
-    previous_actions: list,
-    actions_taken: int,
-    max_actions: int,
-) -> dict:
-    """
-    Ask the configured LLM to decide the single best next action to take.
-    """
-    prev_summary = [a.get("description", "") for a in previous_actions[-10:]]
-
-    prompt = NEXT_ACTION_PROMPT.format(
-        url=url,
-        actions_taken=actions_taken,
-        max_actions=max_actions,
-        previous_actions=json.dumps(prev_summary),
-    )
-    prompt = f"{prompt}\n\nCurrent DOM elements:\n{json.dumps(dom_elements[:30], indent=2)}"
-
-    try:
-        raw = await _generate_text(
-            prompt,
-            screenshot_bytes=screenshot_bytes,
-            response_schema=NEXT_ACTION_SCHEMA,
-            max_output_tokens=500,
-        )
-        return json.loads(_strip_json_fences(raw))
-    except Exception as e:
-        return {"action": "done", "description": f"Agent error: {str(e)}"}
 
 
 async def analyze_error(

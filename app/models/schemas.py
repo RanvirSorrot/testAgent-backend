@@ -9,6 +9,7 @@ import uuid
 class StartTestRequest(BaseModel):
     url: str
     max_actions: Optional[int] = 50
+    
     test_credentials: Optional[dict] = None  # {"username": "", "password": ""}
     test_scope: Optional[List[str]] = [
         "navigation", "forms", "buttons",
@@ -101,12 +102,15 @@ class TestSession(BaseModel):
     session_id: str
     url: str
     status: Literal["queued", "running", "completed", "failed"] = "queued"
+
+    username: Optional[str] = None   # ✅ ADD
+    password: Optional[str] = None   # ✅ ADD
+
     started_at: str = ""
     log: List[LogEntry] = []
     report: Optional[TestReport] = None
     actions_taken: int = 0
     max_actions: int = 50
-
 
 # ── SSE event ────────────────────────────────────────────────────
 

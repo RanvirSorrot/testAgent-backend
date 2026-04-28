@@ -2,13 +2,23 @@ from pydantic_settings import BaseSettings
 from typing import Optional
 
 class Settings(BaseSettings):
-    llm_provider: str = "gemini"
-    gemini_api_key: str = ""
+    llm_provider: str = "groq"  
+
+    # Gemini (paused)
+    gemini_api_key: Optional[str] = None
     gemini_model: str = "gemini-2.5-flash"
-    anthropic_api_key: str = ""
+
+    # Anthropic (paused)
+    anthropic_api_key: Optional[str] = None
     anthropic_model: str = "claude-sonnet-4-20250514"
+
+    # ✅ Groq
+    groq_api_key: Optional[str] = None
+    groq_model: str = "llama-3.1-8b-instant"
+
     supabase_url: Optional[str] = None
     supabase_service_key: Optional[str] = None
+
     max_actions_per_session: int = 50
     screenshot_quality: int = 80
     cors_origins: str = "http://localhost:3000"
